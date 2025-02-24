@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from patient.models import patient
+from django.conf import settings
 # Create your models here.
 class designation(models.Model):
     name=models.CharField(max_length=50)
@@ -20,7 +21,7 @@ class available_time(models.Model):
         return self.time
         
 class doctor(models.Model):
-    user=models.OneToOneField(User,on_delete=models.CASCADE)
+    user=models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.CASCADE)
     image=models.ImageField(upload_to='doctor/images/')
     designation=models.ManyToManyField(designation)
     specializations=models.ManyToManyField(specialization)

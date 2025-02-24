@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'doctor',
     'patient',
     'contact_us',
+    'account',
 ]
 
 MIDDLEWARE = [
@@ -76,6 +77,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'CuraSoft.wsgi.application'
 
 
+AUTH_USER_MODEL='account.Account'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
