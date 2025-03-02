@@ -7,11 +7,7 @@ import jwt
 from datetime import datetime, timedelta
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import authenticate
-#for password reset
-from django.utils.http import urlsafe_base64_encode
-from django.utils.encoding import force_bytes
-from django.contrib.auth.tokens import default_token_generator
-from django.utils.http import urlsafe_base64_decode
+from django.contrib.auth.backends import ModelBackend
 
 User = get_user_model()
 
@@ -60,128 +56,71 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    def validate(self, attrs):
-        email =  attrs.get("email") 
-        password = attrs.get("password")
-        user=User.objects.filter(email=email).first()
-        if not user:
-            raise serializers.ValidationError({"detail": "Incorrect email."})
-        if not user.check_password(password):
-            raise serializers.ValidationError({"detail": "Incorrect password."})
-        if not user.is_active:
-            raise serializers.ValidationError({"detail": "User is not active."})
-   
+# Custom serializer for login with email/username and if is_active is True
 
-        return super().validate(attrs) 
-
-# username or email for login
 # class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+#     username_field = "username_or_email"
+
 #     def validate(self, attrs):
-#         # Get the input from the "email" field (which can be either email or username)
-#         email_or_username = attrs.get("email")
+#         username_or_email = attrs.get("username_or_email")
 #         password = attrs.get("password")
 
-#         # Check if the input is an email or username
-#         if '@' in email_or_username:
-#             user = User.objects.filter(email=email_or_username).first()
-#         else:
-#             user = User.objects.filter(username=email_or_username).first()
+#         # Check if user exists
+#         user = None
+#         if User.objects.filter(email=username_or_email).exists():
+#             user = User.objects.get(email=username_or_email)
+#         elif User.objects.filter(username=username_or_email).exists():
+#             user = User.objects.get(username=username_or_email)
 
 #         if not user:
-#             raise serializers.ValidationError({"detail": "Incorrect email or username."})
+#             raise serializers.ValidationError({"error": "No active account found with the given credentials(Username)"})
 
+#         # Check if password is correct
 #         if not user.check_password(password):
-#             raise serializers.ValidationError({"detail": "Incorrect password."})
+#             raise serializers.ValidationError({"error": "No active account found with the given credentials(Password)"})
 
+#         # Check if account is verified
 #         if not user.is_active:
-#             raise serializers.ValidationError({"detail": "User is not active."})
+#             raise serializers.ValidationError({"error": "Account is not verified!"})
 
-#         # If everything is correct, proceed with the original validation
-#         return super().validate(attrs)
+#         # Generate token
+#         data = super().validate(attrs)
+#         data['username'] = user.username
+#         data['email'] = user.email
+#         return data
 
-class UserProfileSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['username', 'first_name', 'last_name','email','gender','age','address']
-        read_only_fields = ['email', 'username']
+class EmailOrUsernameAuthBackend(ModelBackend):
+    """Custom authentication backend to allow login using email or username"""
+    def authenticate(self, request, username=None, password=None, **kwargs):
+        user = User.objects.filter(email=username).first() or User.objects.filter(username=username).first()
+        if user and user.check_password(password):
+            return user
+        return None
 
-class PasswordChangeSerializer(serializers.Serializer):
-    old_password = serializers.CharField(required=True, write_only=True)
-    new_password = serializers.CharField(required=True, write_only=True)
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        username_or_email = attrs.get("username")  # SimpleJWT expects 'username' field
+        password = attrs.get("password")
 
-    def validate_old_password(self, value):
-        """Check if old password is correct"""
-        if not self.context['request'].user.check_password(value):
-            raise serializers.ValidationError("Old password is incorrect.")
-        return value
+        # Check if user exists
+        user = User.objects.filter(email=username_or_email).first() or User.objects.filter(username=username_or_email).first()
+        if not user:
+            raise serializers.ValidationError({"error": "No active account found with the given credentials (Username or Email)"})
 
-    def validate_new_password(self, value):
-        """Validate new password strength"""
-        validate_password(value)  # Uses Django's built-in password validators
-        return value
+        # Check if account is active
+        if not user.is_active:
+            raise serializers.ValidationError({"error": "Your account is inactive. Please contact support."})
 
-    def save(self):
-        """Update user's password"""
-        user = self.context['request'].user
-        user.set_password(self.validated_data['new_password'])
-        user.save()
-        return user
+        # Authenticate user using custom backend
+        user = authenticate(request=self.context.get('request'), username=username_or_email, password=password)
+        if not user:
+            raise serializers.ValidationError({"error": "No active account found with the given credentials (Password)"})
 
-
-# Password reset
-class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField(required=True)
-
-    def validate_email(self, value):
-        """
-        Check if the email exists in the database.
-        """
-        if not User.objects.filter(email=value).exists():
-            raise serializers.ValidationError("No user found with this email address.")
-        return value
-
-    def save(self):
-        """
-        Generate a password reset token and send an email to the user.
-        """
-        email = self.validated_data['email']
-        user = User.objects.get(email=email)
-        token = default_token_generator.make_token(user)
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        reset_url = f"{settings.FRONTEND_URL}/password-reset-confirm/{uid}/{token}/"  # Update with your frontend URL
-
-        # Send email
-        subject = "Password Reset Request"
-        message = f"Click the link below to reset your password:\n\n{reset_url}"
-        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email])
-
-# Password reset confirm
-class PasswordResetConfirmSerializer(serializers.Serializer):
-    uid = serializers.CharField(required=True)
-    token = serializers.CharField(required=True)
-    new_password = serializers.CharField(required=True, write_only=True)
-
-    def validate(self, data):
-        """
-        Validate the UID, token, and new password.
-        """
-        try:
-            uid = force_bytes(urlsafe_base64_decode(data['uid']))
-            user = User.objects.get(pk=uid)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            raise serializers.ValidationError("Invalid user or token.")
-
-        if not default_token_generator.check_token(user, data['token']):
-            raise serializers.ValidationError("Invalid or expired token.")
-
-        data['user'] = user
-        return data
-
-    def save(self):
-        """
-        Set the new password for the user.
-        """
-        user = self.validated_data['user']
-        user.set_password(self.validated_data['new_password'])
-        user.save()
+        # Generate token
+        refresh = self.get_token(user)
+        return {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "username": user.username,
+            "email": user.email,
+        }
